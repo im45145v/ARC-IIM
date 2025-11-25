@@ -25,8 +25,8 @@ A comprehensive system for managing alumni data with LinkedIn profile scraping, 
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/im45145v/WAIIBA.git
-cd WAIIBA
+git clone https://github.com/im45145v/ARC-IIM.git
+cd ARC-IIM
 ```
 
 2. Create and activate a virtual environment:
@@ -176,7 +176,7 @@ For the GitHub Actions workflow, configure these repository secrets:
 ## Project Structure
 
 ```
-WAIIBA/
+ARC-IIM/
 ├── alumni_system/
 │   ├── __init__.py
 │   ├── chatbot/
