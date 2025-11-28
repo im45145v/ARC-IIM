@@ -24,3 +24,7 @@ plotly>=5.15.0
 
 # NLP (optional, for advanced chatbot)
 # openai>=1.0.0  # Uncomment if using OpenAI for chatbot
+
+# Testing
+pytest>=7.4.0
+hypothesis>=6.92.0

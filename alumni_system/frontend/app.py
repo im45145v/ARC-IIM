@@ -1,49 +1,59 @@
 """
-Alumni Management System - Streamlit Frontend
-=============================================
+Alumni Management System - Modern Streamlit Frontend
+====================================================
 
-A comprehensive Streamlit application for managing alumni data including:
-- Alumni data browsing and filtering
-- Export to Excel functionality
-- Admin interface for manual updates
-- NLP chatbot for queries
+A beautiful, modern interface for managing alumni data.
 """
 
 import io
+import math
+import os
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 import streamlit as st
 
+# Add project root to Python path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+# Load environment variables
+from dotenv import load_dotenv
+env_path = project_root / '.env'
+load_dotenv(dotenv_path=env_path)
+
 # Import alumni system modules
 DB_AVAILABLE = False
-_import_error = None
+DB_ERROR = None
 
 try:
-    from alumni_system.chatbot.nlp_chatbot import get_chatbot
     from alumni_system.database.connection import get_db_context
     from alumni_system.database.crud import (
-        create_alumni,
-        delete_alumni,
-        get_all_alumni,
-        get_alumni_by_id,
-        get_alumni_by_roll_number,
-        get_job_history_by_alumni,
-        get_unique_batches,
-        get_unique_companies,
-        get_unique_locations,
-        search_alumni,
-        update_alumni,
+        create_alumni, delete_alumni, get_all_alumni, get_alumni_by_id,
+        get_alumni_by_roll_number, get_alumni_count, get_job_history_by_alumni,
+        get_unique_batches, get_unique_companies, get_unique_locations,
+        search_alumni, update_alumni, get_education_history_by_alumni
     )
-    from alumni_system.database.init_db import check_database_connection, init_database
-    from alumni_system.database.models import Alumni
-
-    DB_AVAILABLE = True
+    from alumni_system.chatbot.nlp_chatbot import get_chatbot
+    
+    # Test actual database connection
+    try:
+        with get_db_context() as db:
+            get_alumni_count(db)
+        DB_AVAILABLE = True
+    except Exception as conn_error:
+        DB_AVAILABLE = False
+        DB_ERROR = f"Database connection failed: {str(conn_error)}"
+        
 except ImportError as e:
-    _import_error = str(e)
     DB_AVAILABLE = False
-
+    DB_ERROR = f"Import error: {str(e)}"
+except Exception as e:
+    DB_AVAILABLE = False
+    DB_ERROR = f"Unexpected error: {str(e)}"
 
 # =============================================================================
 # PAGE CONFIGURATION
@@ -55,932 +65,672 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-
 # =============================================================================
-# CUSTOM STYLING
+# MODERN STYLING
 # =============================================================================
 st.markdown("""
 <style>
-    /* Main theme */
+    /* Modern color scheme */
+    :root {
+        --primary: #2563eb;
+        --secondary: #7c3aed;
+        --success: #10b981;
+        --danger: #ef4444;
+        --warning: #f59e0b;
+        --dark: #1e293b;
+        --light: #f8fafc;
+    }
+    
+    /* Clean background */
     .stApp {
-        background-color: #f8f9fa;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background-attachment: fixed;
     }
     
-    /* Header styling */
-    .header-card {
-        background: linear-gradient(135deg, #1e3a5f 0%, #0d1b2a 100%);
+    /* Main content area */
+    .main .block-container {
         padding: 2rem;
-        border-radius: 12px;
-        margin-bottom: 1.5rem;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        background: white;
+        border-radius: 16px;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        margin: 2rem auto;
+        max-width: 1400px;
     }
     
-    .header-title {
-        color: #ffffff;
+    /* Sidebar styling */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+    }
+    
+    [data-testid="stSidebar"] .css-1d391kg {
+        color: white;
+    }
+    
+    /* Headers */
+    h1 {
+        color: #1e293b;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+    }
+    
+    h2 {
+        color: #475569;
+        font-weight: 600;
+        margin-top: 2rem;
+    }
+    
+    h3 {
+        color: #64748b;
+        font-weight: 600;
+    }
+    
+    /* Metrics */
+    [data-testid="stMetricValue"] {
         font-size: 2rem;
         font-weight: 700;
-        margin: 0;
+        color: #2563eb;
     }
     
-    .header-subtitle {
-        color: #a0aec0;
-        font-size: 1rem;
-        margin-top: 0.5rem;
-    }
-    
-    /* Card styling */
-    .metric-card {
-        background: white;
-        padding: 1.5rem;
-        border-radius: 10px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-        border-left: 4px solid #1e3a5f;
-    }
-    
-    /* Chat styling */
-    .chat-message {
-        background: white;
-        padding: 1rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-        box-shadow: 0 1px 5px rgba(0,0,0,0.05);
-    }
-    
-    .chat-user {
-        background: #e3f2fd;
-        border-left: 4px solid #1976d2;
-    }
-    
-    .chat-bot {
-        background: #f3e5f5;
-        border-left: 4px solid #7b1fa2;
-    }
-    
-    /* Hide default elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    
-    /* Button styling */
-    .stButton > button {
-        background-color: #1e3a5f;
+    /* Buttons */
+    .stButton>button {
+        background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
         color: white;
         border: none;
-        padding: 0.5rem 1rem;
-        border-radius: 5px;
+        border-radius: 8px;
+        padding: 0.5rem 2rem;
+        font-weight: 600;
+        transition: all 0.3s;
     }
     
-    .stButton > button:hover {
-        background-color: #2d4a6f;
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 10px 20px rgba(37, 99, 235, 0.3);
+    }
+    
+    /* Input fields */
+    .stTextInput>div>div>input,
+    .stSelectbox>div>div>select,
+    .stTextArea>div>div>textarea {
+        border-radius: 8px;
+        border: 2px solid #e2e8f0;
+        padding: 0.75rem;
+    }
+    
+    .stTextInput>div>div>input:focus,
+    .stSelectbox>div>div>select:focus,
+    .stTextArea>div>div>textarea:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+    
+    /* Tables */
+    .dataframe {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* Cards */
+    .info-card {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.07);
+        margin-bottom: 1rem;
+        border-left: 4px solid #2563eb;
+    }
+    
+    .success-card {
+        background: #f0fdf4;
+        border-left-color: #10b981;
+    }
+    
+    .warning-card {
+        background: #fffbeb;
+        border-left-color: #f59e0b;
+    }
+    
+    .error-card {
+        background: #fef2f2;
+        border-left-color: #ef4444;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0;
+        padding: 12px 24px;
+        font-weight: 600;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+        color: white;
+    }
+    
+    /* Expander */
+    .streamlit-expanderHeader {
+        background: #f8fafc;
+        border-radius: 8px;
+        font-weight: 600;
+    }
+    
+    /* Success/Error messages */
+    .stSuccess, .stError, .stWarning, .stInfo {
+        border-radius: 8px;
+        padding: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
-
-# =============================================================================
-# SESSION STATE INITIALIZATION
-# =============================================================================
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "selected_alumni" not in st.session_state:
-    st.session_state.selected_alumni = None
-
-
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
-def alumni_to_dataframe(alumni_list: list) -> pd.DataFrame:
-    """Convert list of Alumni objects to DataFrame."""
-    data = []
-    for alumni in alumni_list:
-        # Get previous companies from job history
-        previous_companies = []
-        if hasattr(alumni, 'job_history') and alumni.job_history:
-            for job in alumni.job_history:
-                if not job.is_current and job.company_name:
-                    role_info = f"{job.company_name}"
-                    if job.designation:
-                        role_info += f" ({job.designation})"
-                    previous_companies.append(role_info)
-        
-        data.append({
-            "ID": alumni.id,
-            "Name": alumni.name,
-            "Batch": alumni.batch,
-            "Roll Number": alumni.roll_number,
-            "Gender": alumni.gender,
-            "Current Company": alumni.current_company,
-            "Current Designation": alumni.current_designation,
-            "Location": alumni.location,
-            "Previous Companies": "; ".join(previous_companies) if previous_companies else "",
-            "Personal Email": alumni.personal_email,
-            "College Email": alumni.college_email,
-            "Mobile": alumni.mobile_number,
-            "LinkedIn": alumni.linkedin_url,
-            "Higher Studies": alumni.higher_studies,
-            "Last Updated": alumni.updated_at,
-        })
-    return pd.DataFrame(data)
 
-
-def export_to_excel(df: pd.DataFrame) -> bytes:
-    """Export DataFrame to Excel bytes."""
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Alumni")
-    return output.getvalue()
-
-
-# =============================================================================
-# SIDEBAR NAVIGATION
-# =============================================================================
-def render_sidebar() -> str:
-    """Render sidebar with navigation."""
-    st.sidebar.markdown("## 🎓 Alumni System")
-    st.sidebar.markdown("---")
-    
-    # Navigation
-    page = st.sidebar.radio(
-        "Navigation",
-        [
-            "📊 Dashboard",
-            "👥 Browse Alumni",
-            "🔍 Search & Filter",
-            "📋 Alumni Details",
-            "💬 Chatbot",
-            "⚙️ Admin Panel",
-        ],
-        label_visibility="collapsed",
-    )
-    
-    st.sidebar.markdown("---")
-    
-    # Database status
-    st.sidebar.markdown("### 📁 Database Status")
-    if DB_AVAILABLE:
-        try:
-            if check_database_connection():
-                st.sidebar.success("✅ Connected")
-            else:
-                st.sidebar.error("❌ Connection Failed")
-        except Exception:
-            st.sidebar.warning("⚠️ Not Configured")
-    else:
-        st.sidebar.info("ℹ️ Demo Mode")
-    
-    st.sidebar.markdown("---")
-    st.sidebar.caption("Alumni Management System v1.0")
-    
-    return page
-
-
-# =============================================================================
-# PAGE RENDERERS
-# =============================================================================
-def render_dashboard():
-    """Render the dashboard page."""
-    st.markdown("""
-    <div class="header-card">
-        <h1 class="header-title">🎓 Alumni Management Dashboard</h1>
-        <p class="header-subtitle">Overview of alumni data and system status</p>
+def show_header(title, subtitle=None, icon="🎓"):
+    """Display a modern header"""
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%); 
+                padding: 2rem; border-radius: 12px; margin-bottom: 2rem;
+                box-shadow: 0 10px 30px rgba(37, 99, 235, 0.3);">
+        <h1 style="color: white; margin: 0; font-size: 2.5rem;">
+            {icon} {title}
+        </h1>
+        {f'<p style="color: rgba(255,255,255,0.9); margin-top: 0.5rem; font-size: 1.1rem;">{subtitle}</p>' if subtitle else ''}
     </div>
     """, unsafe_allow_html=True)
-    
-    # Metrics row
-    col1, col2, col3, col4 = st.columns(4)
-    
-    if DB_AVAILABLE:
-        try:
-            with get_db_context() as db:
-                all_alumni = get_all_alumni(db, limit=10000)
-                total_count = len(all_alumni)
-                batches = get_unique_batches(db)
-                companies = get_unique_companies(db)
-                locations = get_unique_locations(db)
-        except Exception:
-            total_count = 0
-            batches = []
-            companies = []
-            locations = []
-    else:
-        total_count = 0
-        batches = []
-        companies = []
-        locations = []
-    
+
+def show_metric_card(label, value, icon="📊", delta=None):
+    """Display a metric in a card"""
+    col1, col2 = st.columns([1, 4])
     with col1:
-        st.metric("📊 Total Alumni", total_count)
-    
+        st.markdown(f"<div style='font-size: 3rem;'>{icon}</div>", unsafe_allow_html=True)
     with col2:
-        st.metric("🎒 Batches", len(batches))
-    
-    with col3:
-        st.metric("🏢 Companies", len(companies))
-    
-    with col4:
-        st.metric("📍 Locations", len(locations))
-    
-    st.markdown("---")
-    
-    # Quick stats
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### 📈 Quick Stats")
-        if batches:
-            st.write(f"**Batches:** {', '.join(sorted(batches)[:5])}" + 
-                    ("..." if len(batches) > 5 else ""))
-        if companies:
-            st.write(f"**Top Companies:** {', '.join(sorted(companies)[:5])}" +
-                    ("..." if len(companies) > 5 else ""))
-    
-    with col2:
-        st.markdown("### 🔄 Recent Activity")
-        st.info("System initialized. Configure database to see activity.")
-    
-    # Getting started
-    st.markdown("---")
-    st.markdown("### 🚀 Getting Started")
-    st.markdown("""
-    1. **Configure Database**: Set up PostgreSQL and configure environment variables
-    2. **Import Data**: Upload your alumni data CSV or add records manually
-    3. **Set up LinkedIn Scraping**: Configure LinkedIn credentials for profile updates
-    4. **Configure B2 Storage**: Set up Backblaze B2 for PDF storage
-    5. **Use the Chatbot**: Ask natural language questions about alumni
-    """)
+        st.metric(label, value, delta=delta)
 
+def show_info_box(message, type="info"):
+    """Display an info box"""
+    colors = {
+        "info": ("#2563eb", "#eff6ff"),
+        "success": ("#10b981", "#f0fdf4"),
+        "warning": ("#f59e0b", "#fffbeb"),
+        "error": ("#ef4444", "#fef2f2")
+    }
+    color, bg = colors.get(type, colors["info"])
+    
+    st.markdown(f"""
+    <div style="background: {bg}; border-left: 4px solid {color}; 
+                padding: 1rem; border-radius: 8px; margin: 1rem 0;">
+        {message}
+    </div>
+    """, unsafe_allow_html=True)
 
-def render_browse_alumni():
-    """Render the browse alumni page."""
-    st.markdown("### 👥 Browse Alumni")
-    
-    if not DB_AVAILABLE:
-        st.warning("Database not configured. Please set up environment variables.")
-        return
-    
-    try:
-        with get_db_context() as db:
-            # Pagination
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                page_size = st.selectbox("Records per page", [25, 50, 100], index=0)
-            with col2:
-                page_num = st.number_input("Page", min_value=1, value=1)
-            
-            skip = (page_num - 1) * page_size
-            alumni_list = get_all_alumni(db, skip=skip, limit=page_size)
-            
-            if alumni_list:
-                df = alumni_to_dataframe(alumni_list)
-                
-                # Display table
-                st.dataframe(df, use_container_width=True, height=500)
-                
-                # Export button
-                excel_data = export_to_excel(df)
-                st.download_button(
-                    label="📥 Export to Excel",
-                    data=excel_data,
-                    file_name=f"alumni_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-            else:
-                st.info("No alumni records found. Add some records in the Admin Panel.")
-    
-    except Exception as e:
-        st.error(f"Error loading alumni data: {e}")
+# =============================================================================
+# MAIN APP
+# =============================================================================
 
-
-def render_search_filter():
-    """Render the search and filter page."""
-    st.markdown("### 🔍 Search & Filter Alumni")
-    
-    if not DB_AVAILABLE:
-        st.warning("Database not configured. Please set up environment variables.")
-        return
-    
-    try:
-        with get_db_context() as db:
-            # Filter options
-            col1, col2, col3, col4 = st.columns(4)
-            
-            batches = ["All"] + get_unique_batches(db)
-            companies = ["All"] + get_unique_companies(db)
-            locations = ["All"] + get_unique_locations(db)
-            
-            with col1:
-                selected_batch = st.selectbox("Batch", batches)
-            
-            with col2:
-                selected_company = st.selectbox("Company", companies)
-            
-            with col3:
-                selected_location = st.selectbox("Location", locations)
-            
-            with col4:
-                search_query = st.text_input("Search Name/Company")
-            
-            # Apply filters
-            filters = {}
-            if selected_batch != "All":
-                filters["batch"] = selected_batch
-            if selected_company != "All":
-                filters["company"] = selected_company
-            if selected_location != "All":
-                filters["location"] = selected_location
-            
-            if search_query:
-                results = search_alumni(db, search_query, limit=100)
-            else:
-                results = get_all_alumni(db, limit=100, **filters)
-            
-            # Display results
-            st.markdown(f"**Found {len(results)} alumni**")
-            
-            if results:
-                df = alumni_to_dataframe(results)
-                st.dataframe(df, use_container_width=True, height=400)
-                
-                # Export button
-                excel_data = export_to_excel(df)
-                st.download_button(
-                    label="📥 Export Results to Excel",
-                    data=excel_data,
-                    file_name=f"alumni_search_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-    
-    except Exception as e:
-        st.error(f"Error searching alumni: {e}")
-
-
-def render_alumni_details():
-    """Render the alumni details page with job history."""
-    st.markdown("### 📋 Alumni Details & Career History")
-    st.markdown("View detailed information including past companies and roles.")
-    
-    if not DB_AVAILABLE:
-        st.warning("Database not configured. Please set up environment variables.")
-        return
-    
-    try:
-        with get_db_context() as db:
-            # Alumni selection
-            alumni_id = st.number_input("Enter Alumni ID", min_value=1, step=1, value=1)
-            
-            if st.button("Load Alumni Details"):
-                alumni = get_alumni_by_id(db, alumni_id)
-                
-                if alumni:
-                    st.session_state.viewing_alumni_id = alumni_id
-                else:
-                    st.error("Alumni not found.")
-                    return
-            
-            # Display alumni details if selected
-            if hasattr(st.session_state, 'viewing_alumni_id') and st.session_state.viewing_alumni_id:
-                alumni = get_alumni_by_id(db, st.session_state.viewing_alumni_id)
-                
-                if alumni:
-                    # Basic Information Card
-                    st.markdown("---")
-                    st.markdown("#### 👤 Basic Information")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.markdown(f"**Name:** {alumni.name or 'N/A'}")
-                        st.markdown(f"**Batch:** {alumni.batch or 'N/A'}")
-                        st.markdown(f"**Roll Number:** {alumni.roll_number or 'N/A'}")
-                        st.markdown(f"**Gender:** {alumni.gender or 'N/A'}")
-                    
-                    with col2:
-                        st.markdown(f"**Personal Email:** {alumni.personal_email or 'N/A'}")
-                        st.markdown(f"**College Email:** {alumni.college_email or 'N/A'}")
-                        st.markdown(f"**Mobile:** {alumni.mobile_number or 'N/A'}")
-                        st.markdown(f"**WhatsApp:** {alumni.whatsapp_number or 'N/A'}")
-                    
-                    with col3:
-                        if alumni.linkedin_url:
-                            st.markdown(f"**LinkedIn:** [Profile]({alumni.linkedin_url})")
-                        else:
-                            st.markdown("**LinkedIn:** N/A")
-                        st.markdown(f"**Higher Studies:** {alumni.higher_studies or 'N/A'}")
-                        st.markdown(f"**Location:** {alumni.location or 'N/A'}")
-                    
-                    # Current Position Card
-                    st.markdown("---")
-                    st.markdown("#### 💼 Current Position")
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown(f"**Company:** {alumni.current_company or 'N/A'}")
-                        st.markdown(f"**Designation:** {alumni.current_designation or 'N/A'}")
-                    
-                    with col2:
-                        st.markdown(f"**Location:** {alumni.location or 'N/A'}")
-                        st.markdown(f"**Corporate Email:** {alumni.corporate_email or 'N/A'}")
-                    
-                    # Job History Card
-                    st.markdown("---")
-                    st.markdown("#### 📊 Career History (Past Companies & Roles)")
-                    
-                    job_history = get_job_history_by_alumni(db, alumni.id)
-                    
-                    if job_history:
-                        # Create a table for job history
-                        job_data = []
-                        for job in job_history:
-                            start = job.start_date.strftime("%b %Y") if job.start_date else "N/A"
-                            end = job.end_date.strftime("%b %Y") if job.end_date else ("Present" if job.is_current else "N/A")
-                            job_data.append({
-                                "Company": job.company_name,
-                                "Role/Designation": job.designation or "N/A",
-                                "Location": job.location or "N/A",
-                                "Duration": f"{start} - {end}",
-                                "Type": job.employment_type or "Full-time",
-                                "Current": "✓" if job.is_current else "",
-                            })
-                        
-                        job_df = pd.DataFrame(job_data)
-                        st.dataframe(job_df, use_container_width=True, hide_index=True)
-                        
-                        # Summary stats
-                        total_companies = len(set(j.company_name for j in job_history))
-                        st.info(f"📈 Total companies worked at: **{total_companies}** | Total positions: **{len(job_history)}**")
-                    else:
-                        st.info("No job history records found for this alumni.")
-                    
-                    # Education History (if available)
-                    if alumni.education_history:
-                        st.markdown("---")
-                        st.markdown("#### 🎓 Education History")
-                        
-                        edu_data = []
-                        for edu in alumni.education_history:
-                            edu_data.append({
-                                "Institution": edu.institution_name,
-                                "Degree": edu.degree or "N/A",
-                                "Field of Study": edu.field_of_study or "N/A",
-                                "Years": f"{edu.start_year or 'N/A'} - {edu.end_year or 'N/A'}",
-                                "Grade": edu.grade or "N/A",
-                            })
-                        
-                        edu_df = pd.DataFrame(edu_data)
-                        st.dataframe(edu_df, use_container_width=True, hide_index=True)
-                    
-                    # Additional Information
-                    st.markdown("---")
-                    st.markdown("#### 📝 Additional Information")
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown(f"**Internship:** {alumni.internship or 'N/A'}")
-                        st.markdown(f"**POR (Positions of Responsibility):** {alumni.por or 'N/A'}")
-                    
-                    with col2:
-                        st.markdown(f"**Notable Alma Mater:** {alumni.notable_alma_mater or 'N/A'}")
-                        st.markdown(f"**STEP Programme:** {alumni.step_programme or 'N/A'}")
-                    
-                    if alumni.remarks:
-                        st.markdown(f"**Remarks:** {alumni.remarks}")
-    
-    except Exception as e:
-        st.error(f"Error loading alumni details: {e}")
-
-
-def render_chatbot():
-    """Render the chatbot page."""
-    st.markdown("### 💬 Alumni Chatbot")
-    st.markdown("Ask questions about alumni in natural language!")
-    
-    if not DB_AVAILABLE:
-        st.warning("Database not configured. Chatbot requires database connection.")
+def main():
+    # Sidebar
+    with st.sidebar:
         st.markdown("""
-        **Example questions you can ask:**
-        - "Who works at Google?"
-        - "Find alumni from batch 2020"
-        - "Show software engineers"
-        - "How many alumni do we have?"
+        <div style="text-align: center; padding: 2rem 0;">
+            <h1 style="color: white; font-size: 2rem;">🎓</h1>
+            <h2 style="color: white; font-size: 1.5rem; margin: 0;">Alumni System</h2>
+            <p style="color: rgba(255,255,255,0.7); font-size: 0.9rem;">Manage your alumni network</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # Initialize session state for page navigation
+        if 'page' not in st.session_state:
+            st.session_state.page = "🏠 Dashboard"
+        
+        page = st.radio(
+            "Navigation",
+            ["🏠 Dashboard", "👥 Browse Alumni", "🔍 Search", "💬 Chatbot", "⚙️ Admin"],
+            label_visibility="collapsed",
+            key="navigation",
+            index=["🏠 Dashboard", "👥 Browse Alumni", "🔍 Search", "💬 Chatbot", "⚙️ Admin"].index(st.session_state.page) if st.session_state.page in ["🏠 Dashboard", "👥 Browse Alumni", "🔍 Search", "💬 Chatbot", "⚙️ Admin"] else 0
+        )
+        
+        # Update session state when radio changes
+        st.session_state.page = page
+        
+        st.markdown("---")
+        
+        # Database status
+        if DB_AVAILABLE:
+            try:
+                with get_db_context() as db:
+                    count = get_alumni_count(db)
+                st.success(f"✅ Database Connected\n\n{count} alumni records")
+            except:
+                st.error("❌ Database Error")
+        else:
+            st.warning("⚠️ Database Not Configured")
+        
+        st.markdown("---")
+        st.markdown("""
+        <div style="color: rgba(255,255,255,0.5); font-size: 0.8rem; text-align: center;">
+            Alumni Management System v2.0<br>
+            Built with ❤️ using Streamlit
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Main content
+    if not DB_AVAILABLE:
+        show_header("Database Connection Issue", "Unable to connect to the database", "⚠️")
+        
+        if DB_ERROR:
+            show_info_box(f"""
+            <strong>Error Details:</strong><br>
+            {DB_ERROR}
+            """, "error")
+        
+        show_info_box("""
+        <strong>Troubleshooting Steps:</strong><br>
+        1. Verify <code>.env</code> file exists in project root<br>
+        2. Check database credentials (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)<br>
+        3. Ensure PostgreSQL is running: <code>docker-compose ps</code><br>
+        4. Restart the application
+        """, "warning")
+        
+        # Show current environment for debugging
+        import os
+        st.code(f"""
+Current Environment:
+DB_HOST: {os.getenv('DB_HOST', 'NOT SET')}
+DB_PORT: {os.getenv('DB_PORT', 'NOT SET')}
+DB_NAME: {os.getenv('DB_NAME', 'NOT SET')}
+DB_USER: {os.getenv('DB_USER', 'NOT SET')}
+DB_PASSWORD: {'***' if os.getenv('DB_PASSWORD') else 'NOT SET'}
         """)
         return
     
-    # Chat history display
-    for message in st.session_state.chat_history:
-        if message["role"] == "user":
-            st.markdown(f'<div class="chat-message chat-user">👤 **You:** {message["content"]}</div>', 
-                       unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="chat-message chat-bot">🤖 **Bot:** {message["content"]}</div>', 
-                       unsafe_allow_html=True)
+    # Route to pages
+    if page == "🏠 Dashboard":
+        show_dashboard()
+    elif page == "👥 Browse Alumni":
+        show_browse_alumni()
+    elif page == "🔍 Search":
+        show_search()
+    elif page == "💬 Chatbot":
+        show_chatbot()
+    elif page == "⚙️ Admin":
+        show_admin()
+
+# =============================================================================
+# PAGES
+# =============================================================================
+
+def show_dashboard():
+    show_header("Dashboard", "Overview of your alumni network", "📊")
     
-    # Chat input
-    user_input = st.chat_input("Ask a question about alumni...")
-    
-    if user_input:
-        # Add user message to history
-        st.session_state.chat_history.append({
-            "role": "user",
-            "content": user_input,
-        })
+    try:
+        with get_db_context() as db:
+            total_alumni = get_alumni_count(db)
+            batches = get_unique_batches(db)
+            companies = get_unique_companies(db)
+            locations = get_unique_locations(db)
         
-        # Get chatbot response
+        # Metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            show_metric_card("Total Alumni", total_alumni, "👥")
+        
+        with col2:
+            show_metric_card("Batches", len(batches), "🎓")
+        
+        with col3:
+            show_metric_card("Companies", len(companies), "🏢")
+        
+        with col4:
+            show_metric_card("Locations", len(locations), "📍")
+        
+        st.markdown("##")
+        
+        # Recent activity
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📈 Quick Stats")
+            if total_alumni > 0:
+                st.info(f"✅ System is active with {total_alumni} alumni records")
+            else:
+                st.warning("⚠️ No alumni data yet. Add some records to get started!")
+        
+        with col2:
+            st.subheader("🚀 Quick Actions")
+            if st.button("➕ Add New Alumni", use_container_width=True):
+                st.session_state.page = "⚙️ Admin"
+                st.rerun()
+            if st.button("📥 Import from Excel", use_container_width=True):
+                st.session_state.page = "⚙️ Admin"
+                st.rerun()
+            if st.button("👥 Browse All Alumni", use_container_width=True):
+                st.session_state.page = "👥 Browse Alumni"
+                st.rerun()
+        
+    except Exception as e:
+        st.error(f"Error loading dashboard: {e}")
+
+def show_browse_alumni():
+    show_header("Browse Alumni", "View and manage all alumni records", "👥")
+    
+    try:
+        with get_db_context() as db:
+            alumni_list = get_all_alumni(db, limit=1000)
+            
+            if not alumni_list:
+                show_info_box("No alumni records found. Add some records to get started!", "info")
+                return
+            
+            # Convert to DataFrame inside the session context
+            df = pd.DataFrame([{
+                "Roll No": a.roll_number,
+                "Name": a.name,
+                "Batch": a.batch,
+                "Company": a.current_company or "N/A",
+                "Designation": a.current_designation or "N/A",
+                "Location": a.location or "N/A",
+                "Email": a.college_email or a.personal_email or "N/A",
+                "Mobile": a.mobile_number or "N/A",
+            } for a in alumni_list])
+        
+        # Display
+        st.dataframe(df, use_container_width=True, height=600)
+        
+        # Export
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("📥 Export to Excel"):
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Alumni')
+                
+                st.download_button(
+                    label="⬇️ Download Excel File",
+                    data=output.getvalue(),
+                    file_name=f"alumni_export_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        
+        with col2:
+            if st.button("👁️ View Detailed Profiles"):
+                st.session_state.show_detailed = True
+                st.rerun()
+        
+        # Show detailed view if requested
+        if st.session_state.get('show_detailed', False):
+            st.markdown("---")
+            show_detailed_alumni_list()
+        
+    except Exception as e:
+        st.error(f"Error loading alumni: {e}")
+
+
+def show_detailed_alumni_list():
+    """Show detailed alumni profiles with job history and education"""
+    st.subheader("📋 Detailed Alumni Profiles")
+    
+    with get_db_context() as db:
+        alumni_list = get_all_alumni(db, limit=1000)
+        
+        for alumni in alumni_list:
+            with st.expander(f"👤 {alumni.name} - {alumni.roll_number}", expanded=False):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("### 📇 Basic Information")
+                    st.write(f"**Name:** {alumni.name}")
+                    st.write(f"**Roll Number:** {alumni.roll_number}")
+                    st.write(f"**Batch:** {alumni.batch or 'N/A'}")
+                    st.write(f"**Gender:** {alumni.gender or 'N/A'}")
+                    
+                    st.markdown("### 📞 Contact Information")
+                    st.write(f"**Mobile:** {alumni.mobile_number or 'N/A'}")
+                    st.write(f"**WhatsApp:** {alumni.whatsapp_number or 'N/A'}")
+                    st.write(f"**College Email:** {alumni.college_email or 'N/A'}")
+                    st.write(f"**Personal Email:** {alumni.personal_email or 'N/A'}")
+                    st.write(f"**Corporate Email:** {alumni.corporate_email or 'N/A'}")
+                    
+                    if alumni.linkedin_url:
+                        st.markdown(f"**LinkedIn:** [{alumni.linkedin_url}]({alumni.linkedin_url})")
+                    
+                    if alumni.linkedin_pdf_url:
+                        st.markdown(f"**LinkedIn PDF:** [Download]({alumni.linkedin_pdf_url})")
+                
+                with col2:
+                    st.markdown("### 💼 Current Position")
+                    st.write(f"**Company:** {alumni.current_company or 'N/A'}")
+                    st.write(f"**Designation:** {alumni.current_designation or 'N/A'}")
+                    st.write(f"**Location:** {alumni.location or 'N/A'}")
+                    
+                    if alumni.por:
+                        st.markdown("### 🎯 Position of Responsibility / Headline")
+                        st.write(alumni.por)
+                    
+                    if alumni.internship:
+                        st.markdown("### 🏢 Internships")
+                        st.write(alumni.internship)
+                
+                # Job History
+                job_history = get_job_history_by_alumni(db, alumni.id)
+                if job_history:
+                    st.markdown("### 📊 Work Experience")
+                    for i, job in enumerate(job_history, 1):
+                        st.markdown(f"**{i}. {job.designation or 'Position'} at {job.company_name}**")
+                        if job.location:
+                            st.write(f"   📍 {job.location}")
+                        if job.start_date or job.end_date:
+                            start = job.start_date.strftime("%b %Y") if job.start_date else "N/A"
+                            end = job.end_date.strftime("%b %Y") if job.end_date else "Present" if job.is_current else "N/A"
+                            st.write(f"   📅 {start} - {end}")
+                        if job.description:
+                            st.write(f"   {job.description}")
+                        st.write("")
+                
+                # Education History
+                education_history = get_education_history_by_alumni(db, alumni.id)
+                if education_history:
+                    st.markdown("### 🎓 Education")
+                    for i, edu in enumerate(education_history, 1):
+                        st.markdown(f"**{i}. {edu.institution_name}**")
+                        if edu.degree:
+                            st.write(f"   🎓 {edu.degree}")
+                        if edu.field_of_study:
+                            st.write(f"   📚 {edu.field_of_study}")
+                        if edu.start_year or edu.end_year:
+                            years = f"{edu.start_year or 'N/A'} - {edu.end_year or 'N/A'}"
+                            st.write(f"   📅 {years}")
+                        st.write("")
+                
+                # Additional Info
+                if alumni.higher_studies or alumni.notable_alma_mater or alumni.remarks:
+                    st.markdown("### 📝 Additional Information")
+                    if alumni.higher_studies:
+                        st.write(f"**Higher Studies:** {alumni.higher_studies}")
+                    if alumni.notable_alma_mater:
+                        st.write(f"**Notable Alma Mater:** {alumni.notable_alma_mater}")
+                    if alumni.remarks:
+                        st.write(f"**Remarks:** {alumni.remarks}")
+                
+                # Metadata
+                if alumni.last_scraped_at:
+                    st.caption(f"Last scraped: {alumni.last_scraped_at.strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    if st.button("🔙 Back to Table View"):
+        st.session_state.show_detailed = False
+        st.rerun()
+
+def show_search():
+    show_header("Search Alumni", "Find specific alumni records", "🔍")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        search_query = st.text_input("🔍 Search by name or company", placeholder="Enter name or company...")
+    
+    with col2:
+        batch_filter = st.selectbox("Filter by batch", ["All"] + get_unique_batches_safe())
+    
+    if search_query or batch_filter != "All":
+        try:
+            with get_db_context() as db:
+                if search_query:
+                    results = search_alumni(db, search_query)
+                else:
+                    results = get_all_alumni(db, batch=batch_filter if batch_filter != "All" else None)
+                
+                if results:
+                    st.success(f"Found {len(results)} results")
+                    
+                    for alumni in results:
+                        with st.expander(f"👤 {alumni.name} - {alumni.roll_number}", expanded=False):
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.markdown("### 📇 Basic Info")
+                                st.write(f"**Batch:** {alumni.batch or 'N/A'}")
+                                st.write(f"**Gender:** {alumni.gender or 'N/A'}")
+                                
+                                st.markdown("### 📞 Contact")
+                                st.write(f"**Mobile:** {alumni.mobile_number or 'N/A'}")
+                                st.write(f"**Email:** {alumni.college_email or alumni.personal_email or 'N/A'}")
+                                
+                                if alumni.linkedin_url:
+                                    st.markdown(f"**LinkedIn:** [{alumni.linkedin_url}]({alumni.linkedin_url})")
+                            
+                            with col2:
+                                st.markdown("### 💼 Current Position")
+                                st.write(f"**Company:** {alumni.current_company or 'N/A'}")
+                                st.write(f"**Designation:** {alumni.current_designation or 'N/A'}")
+                                st.write(f"**Location:** {alumni.location or 'N/A'}")
+                                
+                                if alumni.por:
+                                    st.markdown("### 🎯 Headline")
+                                    st.write(alumni.por)
+                            
+                            # Job History
+                            job_history = get_job_history_by_alumni(db, alumni.id)
+                            if job_history:
+                                st.markdown("### 📊 Work Experience")
+                                for i, job in enumerate(job_history[:5], 1):
+                                    st.write(f"**{i}. {job.designation or 'Position'} at {job.company_name}**")
+                                    if job.location:
+                                        st.write(f"   📍 {job.location}")
+                            
+                            # Education
+                            education_history = get_education_history_by_alumni(db, alumni.id)
+                            if education_history:
+                                st.markdown("### 🎓 Education")
+                                for i, edu in enumerate(education_history[:3], 1):
+                                    st.write(f"**{i}. {edu.institution_name}**")
+                                    if edu.degree:
+                                        st.write(f"   {edu.degree}")
+                else:
+                    show_info_box("No results found. Try a different search term.", "info")
+        
+        except Exception as e:
+            st.error(f"Search error: {e}")
+
+def show_chatbot():
+    show_header("AI Chatbot", "Ask questions about your alumni network", "💬")
+    
+    show_info_box("""
+    <strong>Try asking:</strong><br>
+    • "How many alumni do we have?"<br>
+    • "Who works at Google?"<br>
+    • "Show alumni from batch 2024"<br>
+    • "Find software engineers"
+    """, "info")
+    
+    query = st.text_input("💬 Ask a question", placeholder="Type your question here...")
+    
+    if query:
         try:
             chatbot = get_chatbot()
-            response = chatbot.process_query(user_input)
+            response = chatbot.process_query(query)
             
-            # Add bot response to history
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": response["response"],
-            })
+            st.markdown("### 🤖 Response")
+            st.write(response.response)
             
-            # Display alumni results if any
-            if response.get("alumni"):
-                st.markdown("#### Results:")
-                results_df = pd.DataFrame(response["alumni"])
-                st.dataframe(results_df, use_container_width=True)
-            
-        except Exception as e:
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "content": f"Sorry, I encountered an error: {str(e)}",
-            })
+            if response.alumni:
+                st.markdown("### 📋 Results")
+                df = pd.DataFrame([{
+                    "Name": a.get("name", "N/A"),
+                    "Batch": a.get("batch", "N/A"),
+                    "Company": a.get("current_company", "N/A"),
+                } for a in response.alumni])
+                st.dataframe(df, use_container_width=True)
         
-        st.rerun()
-    
-    # Clear chat button
-    if st.button("🗑️ Clear Chat"):
-        st.session_state.chat_history = []
-        st.rerun()
+        except Exception as e:
+            st.error(f"Chatbot error: {e}")
 
-
-def render_admin_panel():
-    """Render the admin panel page."""
-    st.markdown("### ⚙️ Admin Panel")
+def show_admin():
+    show_header("Admin Panel", "Manage alumni records", "⚙️")
     
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "➕ Add Alumni",
-        "✏️ Edit Alumni",
-        "🗑️ Delete Alumni",
-        "🔧 Database",
-    ])
+    tab1, tab2, tab3 = st.tabs(["➕ Add Alumni", "✏️ Edit Alumni", "🗑️ Delete Alumni"])
     
     with tab1:
-        render_add_alumni_form()
-    
-    with tab2:
-        render_edit_alumni_form()
-    
-    with tab3:
-        render_delete_alumni_form()
-    
-    with tab4:
-        render_database_tools()
-
-
-def render_add_alumni_form():
-    """Render form to add new alumni."""
-    st.markdown("#### Add New Alumni")
-    
-    if not DB_AVAILABLE:
-        st.warning("Database not configured.")
-        return
-    
-    with st.form("add_alumni_form"):
+        st.subheader("Add New Alumni")
+        
         col1, col2 = st.columns(2)
         
         with col1:
             name = st.text_input("Name *")
-            batch = st.text_input("Batch (e.g., 2020)")
             roll_number = st.text_input("Roll Number *")
-            gender = st.selectbox("Gender", ["", "Male", "Female", "Other"])
-            mobile = st.text_input("Mobile Number")
-            personal_email = st.text_input("Personal Email")
+            batch = st.text_input("Batch")
         
         with col2:
-            current_company = st.text_input("Current Company")
-            current_designation = st.text_input("Current Designation")
+            company = st.text_input("Current Company")
+            designation = st.text_input("Current Designation")
             location = st.text_input("Location")
-            linkedin_url = st.text_input("LinkedIn URL")
-            college_email = st.text_input("College Email")
-            higher_studies = st.text_input("Higher Studies")
         
-        submitted = st.form_submit_button("Add Alumni")
-        
-        if submitted:
-            if not name or not roll_number:
-                st.error("Name and Roll Number are required.")
-            else:
+        if st.button("➕ Add Alumni", type="primary"):
+            if name and roll_number:
                 try:
                     with get_db_context() as db:
                         create_alumni(
                             db,
                             name=name,
-                            batch=batch,
                             roll_number=roll_number,
-                            gender=gender if gender else None,
-                            mobile_number=mobile,
-                            personal_email=personal_email,
-                            current_company=current_company,
-                            current_designation=current_designation,
-                            location=location,
-                            linkedin_url=linkedin_url,
-                            college_email=college_email,
-                            higher_studies=higher_studies,
-                        )
-                    st.success(f"Alumni '{name}' added successfully!")
-                except Exception as e:
-                    st.error(f"Error adding alumni: {e}")
-
-
-def render_edit_alumni_form():
-    """Render form to edit existing alumni."""
-    st.markdown("#### Edit Alumni")
-    
-    if not DB_AVAILABLE:
-        st.warning("Database not configured.")
-        return
-    
-    alumni_id = st.number_input("Alumni ID to edit", min_value=1, step=1)
-    
-    if st.button("Load Alumni"):
-        try:
-            with get_db_context() as db:
-                from alumni_system.database.crud import get_alumni_by_id
-                alumni = get_alumni_by_id(db, alumni_id)
-                if alumni:
-                    st.session_state.selected_alumni = {
-                        "id": alumni.id,
-                        "name": alumni.name,
-                        "batch": alumni.batch,
-                        "roll_number": alumni.roll_number,
-                        "current_company": alumni.current_company,
-                        "current_designation": alumni.current_designation,
-                        "location": alumni.location,
-                        "personal_email": alumni.personal_email,
-                        "mobile_number": alumni.mobile_number,
-                        "linkedin_url": alumni.linkedin_url,
-                    }
-                else:
-                    st.error("Alumni not found.")
-        except Exception as e:
-            st.error(f"Error loading alumni: {e}")
-    
-    if st.session_state.selected_alumni:
-        with st.form("edit_alumni_form"):
-            alumni_data = st.session_state.selected_alumni
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                name = st.text_input("Name", value=alumni_data.get("name", ""))
-                batch = st.text_input("Batch", value=alumni_data.get("batch", ""))
-                current_company = st.text_input("Current Company", 
-                                               value=alumni_data.get("current_company", ""))
-                location = st.text_input("Location", value=alumni_data.get("location", ""))
-            
-            with col2:
-                current_designation = st.text_input("Current Designation",
-                                                   value=alumni_data.get("current_designation", ""))
-                personal_email = st.text_input("Personal Email",
-                                              value=alumni_data.get("personal_email", ""))
-                mobile = st.text_input("Mobile", value=alumni_data.get("mobile_number", ""))
-                linkedin_url = st.text_input("LinkedIn URL",
-                                            value=alumni_data.get("linkedin_url", ""))
-            
-            submitted = st.form_submit_button("Update Alumni")
-            
-            if submitted:
-                try:
-                    with get_db_context() as db:
-                        update_alumni(
-                            db,
-                            alumni_data["id"],
-                            name=name,
                             batch=batch,
-                            current_company=current_company,
-                            current_designation=current_designation,
-                            location=location,
-                            personal_email=personal_email,
-                            mobile_number=mobile,
-                            linkedin_url=linkedin_url,
+                            current_company=company,
+                            current_designation=designation,
+                            location=location
                         )
-                    st.success("Alumni updated successfully!")
-                    st.session_state.selected_alumni = None
+                    st.success(f"✅ Successfully added {name}!")
                 except Exception as e:
-                    st.error(f"Error updating alumni: {e}")
-
-
-def render_delete_alumni_form():
-    """Render form to delete alumni."""
-    st.markdown("#### Delete Alumni")
-    st.warning("⚠️ This action cannot be undone!")
-    
-    if not DB_AVAILABLE:
-        st.warning("Database not configured.")
-        return
-    
-    alumni_id = st.number_input("Alumni ID to delete", min_value=1, step=1, key="delete_id")
-    
-    if st.button("Delete Alumni", type="primary"):
-        try:
-            with get_db_context() as db:
-                if delete_alumni(db, alumni_id):
-                    st.success(f"Alumni with ID {alumni_id} deleted successfully!")
-                else:
-                    st.error("Alumni not found.")
-        except Exception as e:
-            st.error(f"Error deleting alumni: {e}")
-
-
-def render_database_tools():
-    """Render database management tools."""
-    st.markdown("#### Database Tools")
-    
-    if not DB_AVAILABLE:
-        st.warning("Database not configured. Set the following environment variables:")
-        st.code("""
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=alumni_db
-DB_USER=postgres
-DB_PASSWORD=your_password
-        """)
-        return
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("##### Initialize Database")
-        if st.button("Create Tables"):
-            try:
-                init_database()
-                st.success("Database tables created successfully!")
-            except Exception as e:
-                st.error(f"Error: {e}")
-    
-    with col2:
-        st.markdown("##### Connection Test")
-        if st.button("Test Connection"):
-            try:
-                if check_database_connection():
-                    st.success("Database connection successful!")
-                else:
-                    st.error("Database connection failed!")
-            except Exception as e:
-                st.error(f"Error: {e}")
-    
-    st.markdown("---")
-    st.markdown("##### Import Alumni Data (Excel/CSV)")
-    st.markdown("""
-    **Required columns in your file:**
-    - `LinkedIn ID` or `linkedin_url` - LinkedIn profile URL or username
-    - `Roll No.` or `roll_number` - Student roll number
-    - `Mobile No.` or `phone` - Phone number  
-    - `Personal Email Id.` or `email` - Personal email
-    - `College mail Id` or `college_email` - College email
-    
-    *Other columns like Name, Batch will be imported if present. LinkedIn data (current company, job history) will be fetched by the scraper.*
-    """)
-    
-    uploaded_file = st.file_uploader(
-        "Upload Alumni Excel/CSV", 
-        type=["csv", "xlsx", "xls"],
-        help="Upload an Excel (.xlsx, .xls) or CSV file with alumni data"
-    )
-    
-    if uploaded_file:
-        try:
-            # Read file based on type
-            if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
+                    st.error(f"Error: {e}")
             else:
-                df = pd.read_excel(uploaded_file)
-            
-            st.write(f"**Preview ({len(df)} records):**")
-            st.dataframe(df.head(10), use_container_width=True)
-            
-            # Show column mapping
-            st.markdown("##### Column Mapping")
-            st.markdown("The following columns were detected:")
-            
-            # Map common column names to database fields
-            column_mapping = {
-                'linkedin_id': ['LinkedIn ID', 'linkedin_url', 'Linkedin ID', 'LinkedIn', 'linkedin'],
-                'roll_number': ['Roll No.', 'roll_number', 'Roll Number', 'rollno', 'roll'],
-                'name': ['Name of the Student', 'Name', 'name', 'Student Name'],
-                'batch': ['Batch', 'batch', 'Year', 'year'],
-                'mobile_number': ['Mobile No.', 'phone', 'Phone', 'mobile', 'Mobile', 'WhatsApp Number'],
-                'personal_email': ['Personal Email Id.', 'email', 'Email', 'personal_email', 'Personal Email'],
-                'college_email': ['College mail Id', 'college_email', 'College Email', 'college email'],
-            }
-            
-            detected_columns = {}
-            for db_field, possible_names in column_mapping.items():
-                for col_name in possible_names:
-                    if col_name in df.columns:
-                        detected_columns[db_field] = col_name
-                        break
-            
-            if detected_columns:
-                mapping_df = pd.DataFrame([
-                    {"Database Field": k, "Excel/CSV Column": v} 
-                    for k, v in detected_columns.items()
-                ])
-                st.dataframe(mapping_df, use_container_width=True, hide_index=True)
-            else:
-                st.warning("Could not auto-detect columns. Please ensure your file has the required columns.")
-            
-            # Import button
-            if st.button("📥 Import Data", type="primary"):
-                if 'linkedin_id' not in detected_columns and 'roll_number' not in detected_columns:
-                    st.error("At least LinkedIn ID or Roll Number column is required!")
-                else:
-                    with st.spinner("Importing alumni data..."):
-                        try:
-                            imported = 0
-                            skipped = 0
-                            errors = []
-                            
-                            with get_db_context() as db:
-                                for idx, row in df.iterrows():
-                                    try:
-                                        # Get values from mapped columns
-                                        alumni_data = {}
-                                        
-                                        for db_field, csv_col in detected_columns.items():
-                                            value = row.get(csv_col)
-                                            if pd.notna(value):
-                                                alumni_data[db_field] = str(value).strip()
-                                        
-                                        # Process LinkedIn URL/ID
-                                        if 'linkedin_id' in alumni_data:
-                                            linkedin_val = alumni_data['linkedin_id']
-                                            if 'linkedin.com' in linkedin_val:
-                                                alumni_data['linkedin_url'] = linkedin_val
-                                                # Extract ID from URL
-                                                if '/in/' in linkedin_val:
-                                                    alumni_data['linkedin_id'] = linkedin_val.split('/in/')[-1].rstrip('/')
-                                            else:
-                                                alumni_data['linkedin_url'] = f"https://www.linkedin.com/in/{linkedin_val}"
-                                        
-                                        # Check if already exists
-                                        if 'roll_number' in alumni_data:
-                                            from alumni_system.database.crud import get_alumni_by_roll_number
-                                            existing = get_alumni_by_roll_number(db, alumni_data['roll_number'])
-                                            if existing:
-                                                skipped += 1
-                                                continue
-                                        
-                                        # Set name if not provided
-                                        if 'name' not in alumni_data:
-                                            alumni_data['name'] = alumni_data.get('roll_number', f'Alumni_{idx}')
-                                        
-                                        # Create alumni record
-                                        create_alumni(db, **alumni_data)
-                                        imported += 1
-                                        
-                                    except Exception as e:
-                                        errors.append(f"Row {idx + 2}: {str(e)}")
-                            
-                            st.success(f"✅ Import complete! {imported} records imported, {skipped} skipped (duplicates)")
-                            
-                            if errors:
-                                with st.expander(f"⚠️ {len(errors)} errors occurred"):
-                                    for error in errors[:20]:
-                                        st.text(error)
-                                    if len(errors) > 20:
-                                        st.text(f"... and {len(errors) - 20} more errors")
-                        
-                        except Exception as e:
-                            st.error(f"Import failed: {e}")
-        
-        except Exception as e:
-            st.error(f"Error reading file: {e}")
+                st.warning("Please fill in required fields (Name and Roll Number)")
+    
+    with tab2:
+        st.subheader("Edit Alumni")
+        st.info("Search for an alumni to edit their details")
+        # Add edit functionality here
+    
+    with tab3:
+        st.subheader("Delete Alumni")
+        st.warning("⚠️ This action cannot be undone!")
+        # Add delete functionality here
 
+# Helper functions
+def get_unique_batches_safe():
+    try:
+        with get_db_context() as db:
+            return get_unique_batches(db)
+    except:
+        return []
 
 # =============================================================================
-# MAIN APPLICATION
+# RUN APP
 # =============================================================================
-def main():
-    """Main application entry point."""
-    
-    # Render sidebar and get selected page
-    page = render_sidebar()
-    
-    # Render selected page
-    if page == "📊 Dashboard":
-        render_dashboard()
-    elif page == "👥 Browse Alumni":
-        render_browse_alumni()
-    elif page == "🔍 Search & Filter":
-        render_search_filter()
-    elif page == "📋 Alumni Details":
-        render_alumni_details()
-    elif page == "💬 Chatbot":
-        render_chatbot()
-    elif page == "⚙️ Admin Panel":
-        render_admin_panel()
-
 
 if __name__ == "__main__":
     main()

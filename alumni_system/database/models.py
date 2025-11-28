@@ -20,6 +20,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -168,6 +169,7 @@ class ScrapingLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     alumni_id = Column(Integer, ForeignKey("alumni.id"), nullable=True)
     linkedin_url = Column(String(500))
+    account_email = Column(String(255))  # Track which account was used
     status = Column(String(50))  # success, failed, skipped
     error_message = Column(Text)
     pdf_stored = Column(Boolean, default=False)
@@ -178,3 +180,52 @@ class ScrapingLog(Base):
 
     def __repr__(self) -> str:
         return f"<ScrapingLog(id={self.id}, status='{self.status}')>"
+
+
+class AccountUsage(Base):
+    """
+    Account usage tracking table for rate limiting.
+    
+    Tracks daily usage per LinkedIn account to enforce scraping limits.
+    """
+
+    __tablename__ = "account_usage"
+    __table_args__ = (
+        UniqueConstraint('account_email', 'date', name='uq_account_email_date'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_email = Column(String(255), nullable=False, index=True)
+    date = Column(DateTime, nullable=False, index=True)
+    profiles_scraped = Column(Integer, default=0)
+    is_flagged = Column(Boolean, default=False)
+    
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return f"<AccountUsage(account_email='{self.account_email}', date='{self.date}', profiles_scraped={self.profiles_scraped})>"
+
+
+class ScrapingQueue(Base):
+    """
+    Scraping queue table for managing scraping tasks.
+    
+    Maintains a queue of alumni profiles to be scraped with priority support.
+    """
+
+    __tablename__ = "scraping_queue"
+
+    id = Column(Integer, primary_key=True, index=True)
+    alumni_id = Column(Integer, ForeignKey("alumni.id", ondelete="CASCADE"), nullable=False, index=True)
+    priority = Column(Integer, default=0, index=True)
+    status = Column(String(50), default='pending', index=True)  # pending, in_progress, completed, failed
+    attempts = Column(Integer, default=0)
+    last_attempt_at = Column(DateTime)
+    
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self) -> str:
+        return f"<ScrapingQueue(id={self.id}, alumni_id={self.alumni_id}, status='{self.status}')>"

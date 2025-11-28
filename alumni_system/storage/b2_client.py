@@ -8,12 +8,15 @@ from typing import Optional
 
 from b2sdk.v2 import B2Api, InMemoryAccountInfo
 
+from ..utils.error_handling import get_logger, ErrorCategory, ErrorSeverity, log_error
 from .config import (
     ALLOWED_FILE_TYPES,
     MAX_FILE_SIZE_MB,
     PDF_FOLDER_PREFIX,
     get_b2_credentials,
 )
+
+logger = get_logger(__name__)
 
 
 class B2StorageClient:
@@ -62,16 +65,16 @@ class B2StorageClient:
     def upload_pdf(
         self,
         file_path: str,
-        alumni_id: int,
-        linkedin_id: str,
+        roll_number: str,
     ) -> dict:
         """
         Upload a PDF file to B2 storage.
         
+        Uses naming convention: linkedin_profiles/{roll_number}_{timestamp}.pdf
+        
         Args:
             file_path: Local path to the PDF file.
-            alumni_id: ID of the alumni record.
-            linkedin_id: LinkedIn ID for naming the file.
+            roll_number: Roll number of the alumni for naming the file.
         
         Returns:
             Dictionary with upload details including file URL.
@@ -79,6 +82,7 @@ class B2StorageClient:
         Raises:
             ValueError: If file is not a PDF or exceeds size limit.
             FileNotFoundError: If file does not exist.
+            Exception: If upload fails.
         """
         # Validate file
         if not os.path.exists(file_path):
@@ -94,9 +98,9 @@ class B2StorageClient:
                 f"File size ({file_size_mb:.2f}MB) exceeds limit ({MAX_FILE_SIZE_MB}MB)"
             )
         
-        # Generate B2 file name
+        # Generate B2 file name with correct naming convention
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        b2_file_name = f"{PDF_FOLDER_PREFIX}{alumni_id}/{linkedin_id}_{timestamp}.pdf"
+        b2_file_name = f"linkedin_profiles/{roll_number}_{timestamp}.pdf"
         
         # Upload file
         bucket = self._get_bucket()
@@ -122,22 +126,23 @@ class B2StorageClient:
     def upload_pdf_bytes(
         self,
         pdf_bytes: bytes,
-        alumni_id: int,
-        linkedin_id: str,
+        roll_number: str,
     ) -> dict:
         """
         Upload PDF content from bytes to B2 storage.
         
+        Uses naming convention: linkedin_profiles/{roll_number}_{timestamp}.pdf
+        
         Args:
             pdf_bytes: PDF file content as bytes.
-            alumni_id: ID of the alumni record.
-            linkedin_id: LinkedIn ID for naming the file.
+            roll_number: Roll number of the alumni for naming the file.
         
         Returns:
             Dictionary with upload details including file URL.
         
         Raises:
             ValueError: If content exceeds size limit.
+            Exception: If upload fails.
         """
         # Validate size
         size_mb = len(pdf_bytes) / (1024 * 1024)
@@ -146,9 +151,9 @@ class B2StorageClient:
                 f"Content size ({size_mb:.2f}MB) exceeds limit ({MAX_FILE_SIZE_MB}MB)"
             )
         
-        # Generate B2 file name
+        # Generate B2 file name with correct naming convention
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        b2_file_name = f"{PDF_FOLDER_PREFIX}{alumni_id}/{linkedin_id}_{timestamp}.pdf"
+        b2_file_name = f"linkedin_profiles/{roll_number}_{timestamp}.pdf"
         
         # Upload content
         bucket = self._get_bucket()
@@ -201,33 +206,34 @@ class B2StorageClient:
         api.delete_file_version(file_id, file_name)
         return True
 
-    def list_alumni_pdfs(self, alumni_id: int) -> list[dict]:
+    def list_alumni_pdfs(self, roll_number: str) -> list[dict]:
         """
-        List all PDFs for a specific alumni.
+        List all PDFs for a specific alumni by roll number.
         
         Args:
-            alumni_id: ID of the alumni.
+            roll_number: Roll number of the alumni.
         
         Returns:
             List of file info dictionaries.
         """
         bucket = self._get_bucket()
-        prefix = f"{PDF_FOLDER_PREFIX}{alumni_id}/"
+        prefix = f"linkedin_profiles/{roll_number}_"
         
         files = []
-        for file_version, _ in bucket.ls(folder_to_list=prefix):
-            files.append({
-                "file_id": file_version.id_,
-                "file_name": file_version.file_name,
-                "size_bytes": file_version.size,
-                "upload_timestamp": file_version.upload_timestamp,
-            })
+        for file_version, _ in bucket.ls(folder_to_list="linkedin_profiles/"):
+            if file_version.file_name.startswith(prefix):
+                files.append({
+                    "file_id": file_version.id_,
+                    "file_name": file_version.file_name,
+                    "size_bytes": file_version.size,
+                    "upload_timestamp": file_version.upload_timestamp,
+                })
         
         return files
 
     def get_download_url(self, file_id: str) -> str:
         """
-        Get a download URL for a file.
+        Get a download URL for a file by file ID.
         
         Args:
             file_id: B2 file ID.
@@ -237,6 +243,21 @@ class B2StorageClient:
         """
         api = self._get_api()
         return api.get_download_url_for_fileid(file_id)
+    
+    def get_download_url_from_url(self, file_url: str) -> str:
+        """
+        Get a download URL from an existing file URL.
+        
+        This is a convenience method that returns the URL as-is since
+        B2 URLs are already download URLs.
+        
+        Args:
+            file_url: Existing B2 file URL.
+        
+        Returns:
+            Download URL string (same as input).
+        """
+        return file_url
 
 
 # Global client instance

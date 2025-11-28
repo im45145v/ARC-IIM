@@ -10,14 +10,21 @@ from .connection import engine
 from .models import Base
 
 
-def init_database() -> None:
+def init_database(run_migrations: bool = True) -> None:
     """
     Initialize the database by creating all tables.
     
     This function should be called on application startup
     or during deployment to ensure all tables exist.
+    
+    Args:
+        run_migrations: If True, run migrations after creating tables
     """
     Base.metadata.create_all(bind=engine)
+    
+    if run_migrations:
+        from .migrations import run_all_migrations
+        run_all_migrations()
 
 
 def drop_all_tables() -> None:

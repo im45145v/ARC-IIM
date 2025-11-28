@@ -23,6 +23,24 @@ def get_linkedin_credentials() -> dict:
     }
 
 
+def get_linkedin_cookies_file(account_number: int = 1) -> str:
+    """
+    Get path to LinkedIn cookies file from environment variables.
+    
+    Args:
+        account_number: Account number (1, 2, 3, etc.)
+    
+    Returns:
+        Path to cookies file, or empty string if not configured.
+    
+    Environment variables:
+        - LINKEDIN_COOKIES_FILE_1: Path to cookies file for account 1
+        - LINKEDIN_COOKIES_FILE_2: Path to cookies file for account 2
+        - etc.
+    """
+    return os.environ.get(f"LINKEDIN_COOKIES_FILE_{account_number}", "")
+
+
 # Scraping settings
 HEADLESS_MODE = os.environ.get("SCRAPER_HEADLESS", "true").lower() == "true"
 SLOW_MO = int(os.environ.get("SCRAPER_SLOW_MO", "100"))  # milliseconds between actions

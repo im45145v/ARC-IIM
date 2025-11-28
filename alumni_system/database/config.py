@@ -4,7 +4,15 @@ Uses environment variables for sensitive credentials.
 """
 
 import os
+from pathlib import Path
 from urllib.parse import quote_plus
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+
+# Load .env from project root
+env_path = Path(__file__).parent.parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 
 def get_database_url() -> str:

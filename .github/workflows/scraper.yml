@@ -1,0 +1,154 @@
+name: LinkedIn Profile Scraper
+
+# Schedule for January 1st and July 1st at 00:00 UTC
+on:
+  schedule:
+    # Run at 00:00 UTC on January 1st
+    - cron: '0 0 1 1 *'
+    # Run at 00:00 UTC on July 1st
+    - cron: '0 0 1 7 *'
+  
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: 'Filter by specific batch (optional)'
+        required: false
+        type: string
+      max_profiles:
+        description: 'Maximum number of profiles to scrape'
+        required: false
+        default: '100'
+        type: string
+      force_update:
+        description: 'Force update all profiles regardless of last scrape time'
+        required: false
+        default: false
+        type: boolean
+      update_threshold_days:
+        description: 'Only update profiles not scraped within this many days'
+        required: false
+        default: '180'
+        type: string
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Install Playwright browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+      
+      - name: Run scraping job
+        env:
+          # Database configuration
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          
+          # LinkedIn account credentials (support multiple accounts)
+          LINKEDIN_EMAIL_1: ${{ secrets.LINKEDIN_EMAIL_1 }}
+          LINKEDIN_PASSWORD_1: ${{ secrets.LINKEDIN_PASSWORD_1 }}
+          LINKEDIN_EMAIL_2: ${{ secrets.LINKEDIN_EMAIL_2 }}
+          LINKEDIN_PASSWORD_2: ${{ secrets.LINKEDIN_PASSWORD_2 }}
+          LINKEDIN_EMAIL_3: ${{ secrets.LINKEDIN_EMAIL_3 }}
+          LINKEDIN_PASSWORD_3: ${{ secrets.LINKEDIN_PASSWORD_3 }}
+          
+          # B2 Storage configuration
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+          
+          # Scraper configuration
+          SCRAPER_DAILY_LIMIT_PER_ACCOUNT: ${{ secrets.SCRAPER_DAILY_LIMIT_PER_ACCOUNT || '80' }}
+          SCRAPER_MIN_DELAY: ${{ secrets.SCRAPER_MIN_DELAY || '3' }}
+          SCRAPER_MAX_DELAY: ${{ secrets.SCRAPER_MAX_DELAY || '8' }}
+          SCRAPER_MAX_RETRIES: ${{ secrets.SCRAPER_MAX_RETRIES || '3' }}
+        run: |
+          # Build command with parameters
+          CMD="python -m alumni_system.scraper.run"
+          
+          # Add batch filter if provided
+          if [ -n "${{ github.event.inputs.batch }}" ]; then
+            CMD="$CMD --batch '${{ github.event.inputs.batch }}'"
+          fi
+          
+          # Add max profiles (use input or default to 100)
+          MAX_PROFILES="${{ github.event.inputs.max_profiles || '100' }}"
+          CMD="$CMD --max-profiles $MAX_PROFILES"
+          
+          # Add force update flag if enabled
+          if [ "${{ github.event.inputs.force_update }}" = "true" ]; then
+            CMD="$CMD --force-update"
+          fi
+          
+          # Add update threshold (use input or default to 180)
+          THRESHOLD="${{ github.event.inputs.update_threshold_days || '180' }}"
+          CMD="$CMD --update-threshold-days $THRESHOLD"
+          
+          echo "Running command: $CMD"
+          eval $CMD
+      
+      - name: Upload scraping logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraping-logs-${{ github.run_id }}
+          path: |
+            *.log
+            logs/*.log
+          retention-days: 30
+          if-no-files-found: ignore
+      
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue_body = `
+            ## 🚨 Scraping Job Failed
+            
+            **Workflow Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            **Triggered by:** ${{ github.event_name }}
+            **Time:** ${{ github.event.head_commit.timestamp || github.event.workflow_run.created_at }}
+            
+            ### Details
+            - **Batch:** ${{ github.event.inputs.batch || 'All' }}
+            - **Max Profiles:** ${{ github.event.inputs.max_profiles || '100' }}
+            - **Force Update:** ${{ github.event.inputs.force_update || 'false' }}
+            - **Update Threshold:** ${{ github.event.inputs.update_threshold_days || '180' }} days
+            
+            Please check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for more details.
+            `;
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Scraping Job Failed - Run #${{ github.run_number }}`,
+              body: issue_body,
+              labels: ['scraping-failure', 'automated']
+            });
+      
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Scraping job completed successfully!"
+          echo "Check the logs above for detailed statistics."

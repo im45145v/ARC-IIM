@@ -13,7 +13,11 @@ from typing import Optional
 from ..database.connection import get_db_context
 from ..database.crud import get_all_alumni, search_alumni
 from ..database.models import Alumni
+from ..utils.error_handling import get_logger, handle_chatbot_error
 from .config import MAX_RESULTS
+
+# Get logger for this module
+logger = get_logger(__name__)
 
 
 class AlumniChatbot:
@@ -254,12 +258,8 @@ class AlumniChatbot:
                 }
 
         except Exception as e:
-            return {
-                "response": f"Sorry, I encountered an error while searching: {str(e)}",
-                "alumni": [],
-                "count": 0,
-                "error": str(e),
-            }
+            # Use centralized error handling
+            return handle_chatbot_error(logger, e, original_query)
 
     def _general_search_response(self, query: str) -> dict:
         """
@@ -303,12 +303,8 @@ class AlumniChatbot:
                 }
 
         except Exception as e:
-            return {
-                "response": f"Sorry, I encountered an error: {str(e)}",
-                "alumni": [],
-                "count": 0,
-                "error": str(e),
-            }
+            # Use centralized error handling
+            return handle_chatbot_error(logger, e, query)
 
     def _extract_search_term(self, query: str) -> Optional[str]:
         """Extract search term from query."""
@@ -403,12 +399,8 @@ Just type your question and I'll do my best to help!
                 }
 
         except Exception as e:
-            return {
-                "response": f"Sorry, I couldn't get the count: {str(e)}",
-                "alumni": [],
-                "count": 0,
-                "error": str(e),
-            }
+            # Use centralized error handling
+            return handle_chatbot_error(logger, e, query)
 
     def _generate_results_message(self, results: list[Alumni], criteria: dict) -> str:
         """Generate response message for search results."""

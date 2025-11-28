@@ -11,7 +11,7 @@ from typing import Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .models import Alumni, EducationHistory, JobHistory, ScrapingLog
+from .models import Alumni, EducationHistory, JobHistory, ScrapingLog, ScrapingQueue
 
 
 # =============================================================================
@@ -21,15 +21,36 @@ from .models import Alumni, EducationHistory, JobHistory, ScrapingLog
 
 def create_alumni(db: Session, **kwargs) -> Alumni:
     """
-    Create a new alumni record.
+    Create a new alumni record or update existing one (upsert based on roll_number).
+    
+    If an alumni with the same roll_number exists, updates the existing record
+    while preserving the created_at timestamp.
     
     Args:
         db: Database session.
         **kwargs: Alumni field values.
     
     Returns:
-        Created Alumni object.
+        Created or updated Alumni object.
     """
+    roll_number = kwargs.get('roll_number')
+    
+    if roll_number:
+        # Check if alumni with this roll_number already exists
+        existing_alumni = get_alumni_by_roll_number(db, roll_number)
+        
+        if existing_alumni:
+            # Update existing record, preserving created_at
+            for key, value in kwargs.items():
+                if hasattr(existing_alumni, key) and key != 'created_at':
+                    setattr(existing_alumni, key, value)
+            
+            existing_alumni.updated_at = datetime.utcnow()
+            db.commit()
+            db.refresh(existing_alumni)
+            return existing_alumni
+    
+    # Create new record
     alumni = Alumni(**kwargs)
     db.add(alumni)
     db.commit()
@@ -101,9 +122,11 @@ def get_all_alumni(
         location: Filter by location (partial match).
     
     Returns:
-        List of Alumni objects.
+        List of Alumni objects with job_history eagerly loaded.
     """
-    query = db.query(Alumni)
+    from sqlalchemy.orm import joinedload
+    
+    query = db.query(Alumni).options(joinedload(Alumni.job_history))
     
     if batch:
         query = query.filter(Alumni.batch == batch)
@@ -117,39 +140,68 @@ def get_all_alumni(
     return query.offset(skip).limit(limit).all()
 
 
+def get_alumni_count(db: Session) -> int:
+    """
+    Get total count of alumni records.
+    
+    Args:
+        db: Database session.
+    
+    Returns:
+        Total number of alumni records.
+    """
+    return db.query(Alumni).count()
+
+
 def search_alumni(
     db: Session,
     query: str,
     skip: int = 0,
     limit: int = 100,
+    batch: Optional[str] = None,
+    company: Optional[str] = None,
+    designation: Optional[str] = None,
+    location: Optional[str] = None,
 ) -> list[Alumni]:
     """
-    Search alumni by name, company, designation, or location.
+    Search alumni by name or company with optional filtering.
     
     Args:
         db: Database session.
-        query: Search query string.
+        query: Search query string (searches in name and current_company).
         skip: Number of records to skip.
         limit: Maximum number of records to return.
+        batch: Filter by batch.
+        company: Filter by current company (partial match).
+        designation: Filter by current designation (partial match).
+        location: Filter by location (partial match).
     
     Returns:
-        List of matching Alumni objects.
+        List of matching Alumni objects with job_history eagerly loaded.
     """
+    from sqlalchemy.orm import joinedload
+    
     search_pattern = f"%{query}%"
-    return (
-        db.query(Alumni)
-        .filter(
-            or_(
-                Alumni.name.ilike(search_pattern),
-                Alumni.current_company.ilike(search_pattern),
-                Alumni.current_designation.ilike(search_pattern),
-                Alumni.location.ilike(search_pattern),
-            )
+    
+    # Start with search condition (name OR current_company) and eager load job_history
+    query_obj = db.query(Alumni).options(joinedload(Alumni.job_history)).filter(
+        or_(
+            Alumni.name.ilike(search_pattern),
+            Alumni.current_company.ilike(search_pattern),
         )
-        .offset(skip)
-        .limit(limit)
-        .all()
     )
+    
+    # Apply additional filters (AND conditions)
+    if batch:
+        query_obj = query_obj.filter(Alumni.batch == batch)
+    if company:
+        query_obj = query_obj.filter(Alumni.current_company.ilike(f"%{company}%"))
+    if designation:
+        query_obj = query_obj.filter(Alumni.current_designation.ilike(f"%{designation}%"))
+    if location:
+        query_obj = query_obj.filter(Alumni.location.ilike(f"%{location}%"))
+    
+    return query_obj.offset(skip).limit(limit).all()
 
 
 def update_alumni(
@@ -417,3 +469,150 @@ def get_scraping_logs(
         query = query.filter(ScrapingLog.status == status)
     
     return query.order_by(ScrapingLog.created_at.desc()).offset(skip).limit(limit).all()
+
+
+# =============================================================================
+# Scraping Queue CRUD Operations
+# =============================================================================
+
+
+def add_to_scraping_queue(db: Session, alumni_id: int, priority: int = 0) -> ScrapingQueue:
+    """
+    Add an alumni profile to the scraping queue.
+    
+    Args:
+        db: Database session.
+        alumni_id: Alumni ID to queue for scraping.
+        priority: Priority level (higher = more urgent). Default is 0.
+    
+    Returns:
+        Created ScrapingQueue object.
+    """
+    queue_item = ScrapingQueue(
+        alumni_id=alumni_id,
+        priority=priority,
+        status='pending',
+        attempts=0
+    )
+    db.add(queue_item)
+    db.commit()
+    db.refresh(queue_item)
+    return queue_item
+
+
+def get_next_from_queue(db: Session) -> Optional[ScrapingQueue]:
+    """
+    Get the next pending item from the scraping queue.
+    
+    Items are ordered by priority (descending) then by creation time (ascending).
+    Only returns items with status='pending'.
+    
+    Args:
+        db: Database session.
+    
+    Returns:
+        Next ScrapingQueue object or None if queue is empty.
+    """
+    return (
+        db.query(ScrapingQueue)
+        .filter(ScrapingQueue.status == 'pending')
+        .order_by(ScrapingQueue.priority.desc(), ScrapingQueue.created_at.asc())
+        .first()
+    )
+
+
+def mark_queue_item_complete(db: Session, queue_id: int) -> bool:
+    """
+    Mark a queue item as completed.
+    
+    Args:
+        db: Database session.
+        queue_id: ScrapingQueue ID.
+    
+    Returns:
+        True if updated, False if not found.
+    """
+    queue_item = db.query(ScrapingQueue).filter(ScrapingQueue.id == queue_id).first()
+    if not queue_item:
+        return False
+    
+    queue_item.status = 'completed'
+    queue_item.last_attempt_at = datetime.utcnow()
+    db.commit()
+    return True
+
+
+def mark_queue_item_failed(db: Session, queue_id: int) -> bool:
+    """
+    Mark a queue item as failed.
+    
+    Args:
+        db: Database session.
+        queue_id: ScrapingQueue ID.
+    
+    Returns:
+        True if updated, False if not found.
+    """
+    queue_item = db.query(ScrapingQueue).filter(ScrapingQueue.id == queue_id).first()
+    if not queue_item:
+        return False
+    
+    queue_item.status = 'failed'
+    queue_item.attempts += 1
+    queue_item.last_attempt_at = datetime.utcnow()
+    db.commit()
+    return True
+
+
+def mark_queue_item_in_progress(db: Session, queue_id: int) -> bool:
+    """
+    Mark a queue item as in progress.
+    
+    Args:
+        db: Database session.
+        queue_id: ScrapingQueue ID.
+    
+    Returns:
+        True if updated, False if not found.
+    """
+    queue_item = db.query(ScrapingQueue).filter(ScrapingQueue.id == queue_id).first()
+    if not queue_item:
+        return False
+    
+    queue_item.status = 'in_progress'
+    queue_item.attempts += 1
+    queue_item.last_attempt_at = datetime.utcnow()
+    db.commit()
+    return True
+
+
+def get_queue_statistics(db: Session) -> dict:
+    """
+    Get statistics about the scraping queue.
+    
+    Args:
+        db: Database session.
+    
+    Returns:
+        Dictionary with counts for each status:
+        {
+            'pending': int,
+            'in_progress': int,
+            'completed': int,
+            'failed': int,
+            'total': int
+        }
+    """
+    pending_count = db.query(ScrapingQueue).filter(ScrapingQueue.status == 'pending').count()
+    in_progress_count = db.query(ScrapingQueue).filter(ScrapingQueue.status == 'in_progress').count()
+    completed_count = db.query(ScrapingQueue).filter(ScrapingQueue.status == 'completed').count()
+    failed_count = db.query(ScrapingQueue).filter(ScrapingQueue.status == 'failed').count()
+    total_count = db.query(ScrapingQueue).count()
+    
+    return {
+        'pending': pending_count,
+        'in_progress': in_progress_count,
+        'completed': completed_count,
+        'failed': failed_count,
+        'total': total_count
+    }

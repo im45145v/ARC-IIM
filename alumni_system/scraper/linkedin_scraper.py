@@ -34,13 +34,17 @@ Use responsibly and ensure compliance with all applicable laws and policies.
 """
 
 import asyncio
+import json
+import os
 import random
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
+from .account_rotation import LinkedInAccount
 from .config import (
     HEADLESS_MODE,
     MAX_DELAY_SECONDS,
@@ -64,12 +68,22 @@ class LinkedInScraper:
     - PDF download of profiles
     """
 
-    def __init__(self):
-        """Initialize the LinkedIn scraper."""
+    def __init__(self, account: Optional[LinkedInAccount] = None, cookies_file: Optional[str] = None):
+        """
+        Initialize the LinkedIn scraper.
+        
+        Args:
+            account: LinkedInAccount to use for authentication. If None, uses legacy credentials.
+            cookies_file: Path to cookies JSON file for cookie-based authentication.
+                         If provided, takes precedence over account credentials.
+        """
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._logged_in = False
+        self._account = account
+        self._cookies_file = cookies_file
+        self._current_account_email: Optional[str] = None
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -94,7 +108,15 @@ class LinkedInScraper:
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
+            accept_downloads=True,  # Enable download handling
         )
+        
+        # Load cookies BEFORE creating page
+        if self._cookies_file and os.path.exists(self._cookies_file):
+            print(f"Loading cookies from: {self._cookies_file}")
+            await self._load_cookies()
+            print("✅ Cookies loaded into context")
+        
         self._page = await self._context.new_page()
         self._page.set_default_timeout(TIMEOUT)
 
@@ -111,20 +133,156 @@ class LinkedInScraper:
         """Add a random delay to avoid detection."""
         delay = random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS)
         await asyncio.sleep(delay)
-
-    async def login(self) -> bool:
+    
+    async def _load_cookies(self) -> bool:
         """
-        Log in to LinkedIn using credentials from environment variables.
+        Load cookies from file into browser context.
+        
+        Returns:
+            True if cookies loaded successfully, False otherwise.
+        """
+        try:
+            with open(self._cookies_file, 'r') as f:
+                cookies = json.load(f)
+            
+            await self._context.add_cookies(cookies)
+            print(f"Loaded {len(cookies)} cookies from {self._cookies_file}")
+            
+            # Try to extract email from cookies for tracking
+            for cookie in cookies:
+                if cookie.get('name') == 'li_at':  # LinkedIn auth token
+                    self._current_account_email = "cookie_auth"
+                    self._logged_in = True
+                    break
+            
+            return True
+        except Exception as e:
+            print(f"Error loading cookies: {e}")
+            return False
+    
+    async def save_cookies(self, output_file: str) -> bool:
+        """
+        Save current browser cookies to file.
+        
+        Args:
+            output_file: Path to save cookies JSON file.
+        
+        Returns:
+            True if cookies saved successfully, False otherwise.
+        """
+        try:
+            cookies = await self._context.cookies()
+            
+            # Create directory if it doesn't exist
+            Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(output_file, 'w') as f:
+                json.dump(cookies, f, indent=2)
+            
+            print(f"Saved {len(cookies)} cookies to {output_file}")
+            return True
+        except Exception as e:
+            print(f"Error saving cookies: {e}")
+            return False
+    
+    async def verify_cookie_auth(self) -> bool:
+        """
+        Verify that cookie-based authentication is working.
+        
+        Returns:
+            True if authenticated, False otherwise.
+        """
+        try:
+            print("Navigating to LinkedIn feed...")
+            await self._page.goto("https://www.linkedin.com/feed/", wait_until="networkidle")
+            
+            # Wait a bit for page to fully load
+            await asyncio.sleep(2)
+            
+            # Check multiple indicators of being logged in
+            current_url = self._page.url
+            print(f"Current URL: {current_url}")
+            
+            # Check if we're on feed or home (logged in)
+            if "feed" in current_url or "home" in current_url:
+                print("✅ Successfully logged in!")
+                self._logged_in = True
+                return True
+            
+            # Check if login page is shown (not logged in)
+            if "login" in current_url or "checkpoint" in current_url:
+                print("❌ Not logged in - login page shown")
+                return False
+            
+            # Try to find logged-in indicators on page
+            try:
+                # Look for profile menu or other logged-in elements
+                profile_menu = await self._page.query_selector('[data-test-id="profile-menu-trigger"]')
+                if profile_menu:
+                    print("✅ Found profile menu - logged in!")
+                    self._logged_in = True
+                    return True
+            except:
+                pass
+            
+            # If we got here, assume logged in if URL is reasonable
+            if "linkedin.com" in current_url and "login" not in current_url:
+                print("✅ Appears to be logged in")
+                self._logged_in = True
+                return True
+            
+            print("❌ Could not verify login status")
+            return False
+            
+        except Exception as e:
+            print(f"Error verifying cookie auth: {e}")
+            return False
+
+    async def login(self, account: Optional[LinkedInAccount] = None) -> bool:
+        """
+        Log in to LinkedIn using cookies (if available) or credentials.
+        
+        Priority order:
+        1. Cookie-based authentication (if cookies loaded)
+        2. Account credentials (if provided)
+        3. Legacy environment variable credentials
+        
+        Args:
+            account: LinkedInAccount to use for login. If None, uses instance account or legacy credentials.
         
         Returns:
             True if login successful, False otherwise.
+        
+        Raises:
+            Exception: If security checkpoint is detected.
         """
         if self._logged_in:
             return True
 
-        credentials = get_linkedin_credentials()
-        if not credentials["email"] or not credentials["password"]:
-            raise ValueError("LinkedIn credentials not configured in environment variables")
+        # Try cookie-based authentication first
+        if self._cookies_file and os.path.exists(self._cookies_file):
+            print("Attempting cookie-based authentication...")
+            if await self.verify_cookie_auth():
+                return True
+            else:
+                print("Cookie authentication failed, falling back to credentials...")
+
+        # Determine which account to use for credential-based login
+        login_account = account or self._account
+        
+        if login_account:
+            email = login_account.email
+            password = login_account.password
+            self._current_account_email = email
+        else:
+            # Fall back to legacy credentials
+            credentials = get_linkedin_credentials()
+            email = credentials["email"]
+            password = credentials["password"]
+            self._current_account_email = email
+            
+        if not email or not password:
+            raise ValueError("LinkedIn credentials not configured and no valid cookies found")
 
         try:
             # Navigate to login page
@@ -132,8 +290,8 @@ class LinkedInScraper:
             await self._random_delay()
 
             # Fill in credentials
-            await self._page.fill(SELECTORS["login_email"], credentials["email"])
-            await self._page.fill(SELECTORS["login_password"], credentials["password"])
+            await self._page.fill(SELECTORS["login_email"], email)
+            await self._page.fill(SELECTORS["login_password"], password)
 
             # Click login button
             await self._page.click(SELECTORS["login_button"])
@@ -145,39 +303,58 @@ class LinkedInScraper:
                 return True
 
             # Check for security verification or error
-            if "checkpoint" in self._page.url:
-                raise Exception("LinkedIn security verification required")
+            if "checkpoint" in self._page.url or "challenge" in self._page.url:
+                raise Exception("LinkedIn security checkpoint detected")
 
             return False
 
         except Exception as e:
+            # Re-raise checkpoint exceptions so they can be handled by caller
+            if "checkpoint" in str(e).lower() or "challenge" in str(e).lower():
+                raise
             print(f"Login failed: {e}")
             return False
 
-    async def scrape_profile(self, linkedin_url: str) -> Optional[dict]:
+    async def scrape_profile(self, linkedin_url: str, max_retries: Optional[int] = None) -> Optional[dict]:
         """
         Scrape a LinkedIn profile and extract relevant information.
         
         Args:
             linkedin_url: URL of the LinkedIn profile to scrape.
+            max_retries: Maximum number of retry attempts. If None, uses MAX_RETRIES from config.
         
         Returns:
             Dictionary containing extracted profile data, or None if failed.
+        
+        Raises:
+            Exception: If security checkpoint is detected (to trigger account rotation).
         """
         if not self._logged_in:
+            print("Not logged in, attempting login...")
             if not await self.login():
                 raise Exception("Failed to login to LinkedIn")
+            print("✅ Login successful")
 
-        for attempt in range(MAX_RETRIES):
+        retries = max_retries if max_retries is not None else MAX_RETRIES
+        
+        for attempt in range(retries):
             try:
                 await self._random_delay()
-                await self._page.goto(linkedin_url)
-                await self._page.wait_for_load_state("networkidle")
+                print(f"Navigating to profile: {linkedin_url}")
+                await self._page.goto(linkedin_url, wait_until="networkidle")
+                
+                # Wait for page to fully load
+                await asyncio.sleep(2)
+                
+                # Check for security checkpoint after navigation
+                if "checkpoint" in self._page.url or "challenge" in self._page.url:
+                    raise Exception("LinkedIn security checkpoint detected")
 
                 # Extract profile data
                 profile_data = {
                     "linkedin_url": linkedin_url,
                     "scraped_at": datetime.utcnow().isoformat(),
+                    "account_email": self._current_account_email,
                 }
 
                 # Extract basic info
@@ -195,10 +372,17 @@ class LinkedInScraper:
                 return profile_data
 
             except Exception as e:
-                print(f"Attempt {attempt + 1} failed: {e}")
-                if attempt < MAX_RETRIES - 1:
+                # Re-raise checkpoint exceptions immediately (don't retry)
+                if "checkpoint" in str(e).lower() or "challenge" in str(e).lower():
+                    raise
+                    
+                print(f"Attempt {attempt + 1}/{retries} failed: {e}")
+                if attempt < retries - 1:
                     await self._random_delay()
-                continue
+                    continue
+                else:
+                    # All retries exhausted
+                    return None
 
         return None
 
@@ -425,13 +609,19 @@ class LinkedInScraper:
 
     async def download_profile_pdf(self, linkedin_url: str) -> Optional[bytes]:
         """
-        Download LinkedIn profile as PDF.
+        Download LinkedIn profile as PDF using the "Save to PDF" button.
+        
+        LinkedIn's "Save to PDF" triggers a backend API call that returns a real PDF file.
+        This method properly captures that download event.
         
         Args:
             linkedin_url: URL of the LinkedIn profile.
         
         Returns:
             PDF content as bytes, or None if failed.
+        
+        Raises:
+            Exception: If security checkpoint is detected.
         """
         if not self._logged_in:
             if not await self.login():
@@ -439,26 +629,147 @@ class LinkedInScraper:
 
         try:
             await self._random_delay()
-            await self._page.goto(linkedin_url)
-            await self._page.wait_for_load_state("networkidle")
+            print(f"   Navigating to profile: {linkedin_url}")
+            await self._page.goto(linkedin_url, wait_until="networkidle")
+            
+            # Wait for page to fully load
+            await asyncio.sleep(3)
+            
+            # Check for security checkpoint
+            if "checkpoint" in self._page.url or "challenge" in self._page.url:
+                raise Exception("LinkedIn security checkpoint detected")
 
-            # Generate PDF from page
-            pdf_bytes = await self._page.pdf(
-                format="A4",
-                print_background=True,
-                margin={
-                    "top": "1cm",
-                    "right": "1cm",
-                    "bottom": "1cm",
-                    "left": "1cm",
-                },
-            )
-
-            return pdf_bytes
+            print("   📄 Attempting to download PDF using 'Save to PDF'...")
+            print()
+            
+            # Step 1: Wait for and click the "More actions" button
+            print("   Step 1: Looking for 'More actions' button...")
+            
+            # Try to find the More button with various selectors
+            more_selectors = [
+                'button[aria-label="More actions"]',
+                'button.artdeco-dropdown__trigger:has-text("More")',
+                'button[id*="profile-overflow-action"]',
+                'button[aria-label*="More"]',
+            ]
+            
+            more_button = None
+            for selector in more_selectors:
+                try:
+                    await self._page.wait_for_selector(selector, timeout=5000)
+                    more_button = await self._page.query_selector(selector)
+                    if more_button:
+                        print(f"   ✅ Found 'More' button: {selector}")
+                        break
+                except:
+                    continue
+            
+            if not more_button:
+                print("   ⚠️  'More' button not found, falling back to page PDF...")
+                pdf_bytes = await self._page.pdf(
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "1cm", "right": "1cm", "bottom": "1cm", "left": "1cm"},
+                )
+                return pdf_bytes
+            
+            # Click the More button
+            print("   Clicking 'More' button...")
+            await more_button.click()
+            await asyncio.sleep(1.5)
+            print("   ✅ 'More' menu opened")
+            print()
+            
+            # Step 2: Set up download listener and click "Save to PDF"
+            print("   Step 2: Setting up download listener...")
+            
+            try:
+                # Set up download listener BEFORE clicking "Save to PDF"
+                async with self._page.expect_download(timeout=30000) as download_info:
+                    print("   Clicking 'Save to PDF'...")
+                    
+                    # Click "Save to PDF" - try multiple selectors based on actual HTML
+                    save_pdf_selectors = [
+                        'div[aria-label="Save to PDF"][role="button"]',
+                        'div[aria-label="Save to PDF"]',
+                        '[aria-label="Save to PDF"]',
+                        'text=Save to PDF',
+                    ]
+                    
+                    clicked = False
+                    for selector in save_pdf_selectors:
+                        try:
+                            element = await self._page.query_selector(selector)
+                            if element:
+                                await element.click()
+                                clicked = True
+                                print(f"   ✅ Clicked 'Save to PDF' with: {selector}")
+                                break
+                        except:
+                            continue
+                    
+                    if not clicked:
+                        raise Exception("Could not click 'Save to PDF'")
+                
+                # Wait for the download to complete
+                print("   Waiting for download...")
+                download = await download_info.value
+                
+                print(f"   ✅ Download started: {download.suggested_filename}")
+                
+                # Get the download path
+                download_path = await download.path()
+                
+                if not download_path:
+                    raise Exception("Download path is None")
+                
+                print(f"   ✅ Download completed: {download_path}")
+                
+                # Read the downloaded PDF file
+                with open(download_path, 'rb') as f:
+                    pdf_bytes = f.read()
+                
+                print(f"   ✅ PDF captured from LinkedIn download ({len(pdf_bytes):,} bytes)")
+                print()
+                return pdf_bytes
+                
+            except Exception as download_error:
+                print(f"   ⚠️  Download capture failed: {download_error}")
+                print("   Falling back to page PDF generation...")
+                pdf_bytes = await self._page.pdf(
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "1cm", "right": "1cm", "bottom": "1cm", "left": "1cm"},
+                )
+                print(f"   ✅ PDF generated using fallback ({len(pdf_bytes):,} bytes)")
+                return pdf_bytes
 
         except Exception as e:
-            print(f"Error downloading PDF: {e}")
-            return None
+            # Re-raise checkpoint exceptions
+            if "checkpoint" in str(e).lower() or "challenge" in str(e).lower():
+                raise
+            print(f"   ❌ Error downloading PDF: {e}")
+            print("   Falling back to simple PDF generation...")
+            try:
+                pdf_bytes = await self._page.pdf(
+                    format="A4",
+                    print_background=True,
+                    margin={"top": "1cm", "right": "1cm", "bottom": "1cm", "left": "1cm"},
+                )
+                print(f"   ✅ PDF generated using fallback ({len(pdf_bytes):,} bytes)")
+                return pdf_bytes
+            except Exception as fallback_error:
+                print(f"   ❌ Fallback also failed: {fallback_error}")
+                return None
+    
+    def get_current_account_email(self) -> Optional[str]:
+        """
+        Get the email of the currently logged-in account.
+        
+        Returns:
+            Email address of current account, or None if not logged in.
+        """
+        return self._current_account_email
 
 
 async def scrape_linkedin_profile(linkedin_url: str) -> Optional[dict]:
